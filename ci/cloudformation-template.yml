@@ -1,0 +1,168 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Parameters:
+  BucketName:
+    Type: String
+  HostedZoneId:
+    Type: String
+  WebDomain:
+    Type: String
+  CertificateArn:
+    Type: String
+
+Resources:
+  S3Bucket:
+    Type: "AWS::S3::Bucket"
+    Properties: 
+      AccessControl: "Private"
+      BucketName: !Ref BucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+#    DeletionPolicy: "Retain"
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref BucketName
+      PolicyDocument:
+        Statement:
+          - Sid: 'Bucket policy for cloudfront(TianSen AWS Workshop)'
+            Action:
+              - 's3:GetObject'
+            Effect: Allow
+            Resource: !Join
+              - ''
+              - - 'arn:aws:s3:::'
+                - !Ref BucketName
+                - '/*'
+            Principal:
+              CanonicalUser: !GetAtt
+                - 'CloudFrontOriginAccessIdentity'
+                - 'S3CanonicalUserId'
+    DependsOn:
+      - S3Bucket
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        WebACLId: !Ref MyWebACL
+        Enabled: true
+        HttpVersion: http2
+        PriceClass: PriceClass_100
+        Aliases:
+          - !Ref WebDomain
+        Origins:
+          - DomainName: !Join
+            - ''
+            - - !Ref BucketName
+              - '.s3.amazonaws.com'
+            Id: !Ref BucketName
+            S3OriginConfig:
+              OriginAccessIdentity: !Join
+                - ''
+                - - 'origin-access-identity/cloudfront/'
+                  - !Ref 'CloudFrontOriginAccessIdentity'
+        ViewerCertificate:
+          AcmCertificateArn: !Ref CertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2019
+        DefaultRootObject: index.html
+        DefaultCacheBehavior:
+          AllowedMethods:
+            - GET
+            - HEAD
+          CachedMethods:
+            - GET
+            - HEAD
+          Compress: true
+          ViewerProtocolPolicy: redirect-to-https
+          TargetOriginId: !Ref BucketName
+#          OriginRequestPolicyId: !Ref CFDOriginRequestPolicy
+          CachePolicyId: !Ref CachePolicy
+    DependsOn:
+      - CloudFrontOriginAccessIdentity
+      - S3Bucket
+      - MyWebACL
+#      - CFDOriginRequestPolicy
+#  CFDOriginRequestPolicy:
+#    Type: AWS::CloudFront::OriginRequestPolicy
+#    Properties:
+#      OriginRequestPolicyConfig:
+#        CookiesConfig:
+#          CookieBehavior: none
+#        HeadersConfig:
+#          HeaderBehavior: none
+#        Name: mkr-tiansen-aws-workshop-origin-request-policy
+#        QueryStringsConfig:
+#          QueryStringBehavior: none
+  CloudFrontOriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: Identity for S3(TianSen AWS Workshop)
+  CachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Comment: Cache policy for cloudfront(TianSen AWS Workshop)
+        Name: mkr-tiansen-workshop-cache-policy
+        MinTTL: 0
+        DefaultTTL: 0
+        MaxTTL: 31536000
+        ParametersInCacheKeyAndForwardedToOrigin:
+          CookiesConfig:
+            CookieBehavior: none
+          EnableAcceptEncodingGzip: true
+          EnableAcceptEncodingBrotli: true
+          HeadersConfig:
+            HeaderBehavior: none
+          QueryStringsConfig:
+            QueryStringBehavior: none
+  DomainRecord:
+    Type: AWS::Route53::RecordSetGroup
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      RecordSets:
+        - Name: !Ref WebDomain
+          Type: A
+          AliasTarget:
+            HostedZoneId: Z2FDTNDATAQYW2
+            DNSName: !GetAtt
+              - Distribution
+              - DomainName
+    DependsOn:
+      Distribution
+  IPSet:
+    Type: AWS::WAF::IPSet
+    Properties:
+      IPSetDescriptors:
+        - Type: IPV4
+          Value: 0.0.0.0/32
+      Name: IpSet demo
+  WAFRule:
+    Type: AWS::WAF::Rule
+    Properties:
+      MetricName: IpSetRuleForMkrWorkshop
+      Name: IpSetRuleForMkrWorkshop
+      Predicates:
+        - DataId: !Ref "IPSet"
+          Negated: false
+          Type: "IPMatch"
+    DependsOn:
+      - IPSet
+  MyWebACL:
+    Type: "AWS::WAF::WebACL"
+    Properties:
+      Name: "WebACL to allow whitelist IP addresses"
+      DefaultAction:
+        Type: "BLOCK"
+      MetricName: "MyWebACL"
+      Rules:
+        - Action:
+            Type: "ALLOW"
+          Priority: 1
+          RuleId: !Ref "WAFRule"
+    DependsOn:
+      - WAFRule
